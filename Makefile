@@ -4,7 +4,7 @@
 CC = gcc
 CFLAGS = -Wall -Wextra -std=c11 -Isrc
 
-SRC = platform/pc/main.c
+SRC = platform/pc/main.c src/hal/sensor_hal_sim.c
 OUT = sentinela.exe
 
 all: $(OUT)

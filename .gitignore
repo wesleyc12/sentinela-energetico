@@ -1,0 +1,9 @@
+# Build artifacts
+*.exe
+*.o
+
+# Editor-specific local config
+.vscode/
+
+# Test output files
+saida.txt

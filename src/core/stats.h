@@ -6,11 +6,15 @@
 
 #include "core/window.h"
 
-// Arithmetic mean of all samples currently held in the window.
-float stats_mean(const SlidingWindow *window);
+#ifdef __cplusplus
+extern "C" {
+#endif
 
-// Population standard deviation of all samples currently held in the
-// window, given a pre-computed mean (avoids recomputing it twice).
+float stats_mean(const SlidingWindow *window);
 float stats_stddev(const SlidingWindow *window, float mean);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif // STATS_H

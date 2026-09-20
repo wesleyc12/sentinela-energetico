@@ -1,42 +1,40 @@
 // platform/pc/main.c
-// Module 3 test: for each simulated reading, push it into the window
-// and evaluate BOTH detection strategies (fixed and adaptive) side by
-// side, along with the window's current mean and stddev, so we can
-// compare their behavior directly on the same data.
+// Module 4 final test: the complete pipeline (sensor -> window ->
+// fixed threshold detection -> FSM with hysteresis -> output layer).
+// Only transitions are printed, driven through output_hal, not by
+// main.c directly.
 
 #include <stdio.h>
 #include "hal/sensor_hal.h"
 #include "core/window.h"
 #include "core/stats.h"
 #include "core/detector.h"
+#include "app/fsm.h"
+#include "output/output_hal.h"
 
-#define TEST_SAMPLE_COUNT        500
-#define MIN_SAMPLES_FOR_ADAPTIVE  10
+#define TEST_SAMPLE_COUNT 1000
 
 int main(void) {
     sensor_hal_init();
+    output_hal_init();
 
     SlidingWindow window;
     window_init(&window);
 
-    printf("index,value,mean,stddev,fixed_flag,adaptive_flag\n");
+    Fsm fsm;
+    fsm_init(&fsm);
 
     for (int i = 0; i < TEST_SAMPLE_COUNT; i++) {
         uint16_t value = sensor_hal_read();
         window_push(&window, value);
 
-        float mean = stats_mean(&window);
-        float stddev = stats_stddev(&window, mean);
-
         bool fixed_flag = detector_fixed(value);
-        bool adaptive_flag = false;
+        bool transitioned = fsm_update(&fsm, fixed_flag);
 
-        if (window_count(&window) >= MIN_SAMPLES_FOR_ADAPTIVE) {
-            adaptive_flag = detector_adaptive(&window, value);
+        if (transitioned) {
+            printf("[%d] ", i);
+            output_hal_update(fsm_get_state(&fsm));
         }
-
-        printf("%d,%u,%.1f,%.1f,%d,%d\n",
-               i, value, mean, stddev, fixed_flag, adaptive_flag);
     }
 
     return 0;

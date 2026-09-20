@@ -9,22 +9,26 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #define WINDOW_SIZE 20
 
 typedef struct {
     uint16_t samples[WINDOW_SIZE];
-    int write_index;   // position where the next sample will be written
-    int count;         // valid samples held so far (caps at WINDOW_SIZE)
+    int write_index;
+    int count;
 } SlidingWindow;
 
 void window_init(SlidingWindow *window);
 void window_push(SlidingWindow *window, uint16_t value);
 bool window_is_full(const SlidingWindow *window);
 int window_count(const SlidingWindow *window);
-
-// Returns the sample at position `index_from_oldest` (0 = oldest sample
-// currently held, count-1 = most recent). Caller must ensure
-// index_from_oldest is within [0, window_count(window) - 1].
 uint16_t window_get(const SlidingWindow *window, int index_from_oldest);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif // WINDOW_H

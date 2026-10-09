@@ -13,7 +13,7 @@
 extern "C" {
 #endif
 
-#define FIXED_THRESHOLD 570.0f
+#define FIXED_THRESHOLD 590.0f
 #define K_SIGMA 3.0f
 
 bool detector_fixed(uint16_t value);

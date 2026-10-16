@@ -1,7 +1,7 @@
 // output_hal_arduino.cpp
 // Real hardware implementation of the output layer: drives an LED
-// and a buzzer based on the FSM state. output_hal_init() explicitly
-// silences the buzzer pin to avoid floating-pin noise at startup.
+// and a buzzer based on the FSM state. It prints nothing: messages
+// are the sketch's job, so they never mix into the CSV log.
 
 #include <Arduino.h>
 
@@ -23,10 +23,8 @@ void output_hal_update(SystemState state) {
   if (state == STATE_ANOMALIA) {
     digitalWrite(LED_PIN, HIGH);
     digitalWrite(BUZZER_PIN, HIGH);
-    Serial.println("LED ON, BUZZER ON -- ANOMALIA detected.");
   } else {
     digitalWrite(LED_PIN, LOW);
     digitalWrite(BUZZER_PIN, LOW);
-    Serial.println("LED OFF, BUZZER OFF -- back to NORMAL.");
   }
 }

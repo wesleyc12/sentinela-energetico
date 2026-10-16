@@ -1,9 +1,14 @@
 // sentinela_arduino.ino
 // Final Arduino firmware: full pipeline (sensor -> window -> fixed
 // threshold detection -> FSM with hysteresis -> output: LED + buzzer).
-// The Serial Monitor stays quiet: state ('E') and temperature ('T')
-// are printed only on request. The temperature is also printed
-// automatically, but only when an anomaly is detected.
+//
+// The Serial Monitor stays quiet by default. Commands (type + Enter):
+//   E = print current state
+//   T = print estimated temperature
+//   L = toggle CSV logging (one line per sample)
+//   A = set label to 1 (an anomaly is really happening)
+//   N = set label to 0 (everything is normal)
+// The temperature is also printed automatically when an anomaly starts.
 
 extern "C" {
   #include "src/hal/sensor_hal.h"
@@ -16,7 +21,8 @@ extern "C" {
 
 #include <math.h>
 
-#define SAMPLE_INTERVAL_MS 200
+#define SAMPLE_INTERVAL_MS       200
+#define MIN_SAMPLES_FOR_ADAPTIVE 10
 
 // Assumed NTC parameters, used ONLY for the temperature estimate.
 // Anomaly detection never uses these: it works on the raw reading.
@@ -28,6 +34,8 @@ extern "C" {
 SlidingWindow window;
 Fsm fsm;
 uint16_t last_value = 0;
+bool logging_enabled = false;
+uint8_t current_label = 0;  // ground truth, set by the user: 0 normal, 1 anomaly
 
 const char *state_name(SystemState state) {
   return (state == STATE_ANOMALIA) ? "ANOMALIA" : "NORMAL";
@@ -59,7 +67,33 @@ void print_state() {
   Serial.println(state_name(fsm_get_state(&fsm)));
 }
 
-// Reads whatever the user typed: 'T' = temperature, 'E' = state.
+void print_log_header() {
+  Serial.println("ms,raw,mean,stddev,fixed_flag,adaptive_flag,state,label");
+}
+
+// One CSV line per sample: the data the classifier will train on.
+void print_log_line(uint16_t value, bool fixed_flag, bool adaptive_flag) {
+  float mean = stats_mean(&window);
+  float stddev = stats_stddev(&window, mean);
+
+  Serial.print(millis());
+  Serial.print(',');
+  Serial.print(value);
+  Serial.print(',');
+  Serial.print(mean, 1);
+  Serial.print(',');
+  Serial.print(stddev, 1);
+  Serial.print(',');
+  Serial.print(fixed_flag ? 1 : 0);
+  Serial.print(',');
+  Serial.print(adaptive_flag ? 1 : 0);
+  Serial.print(',');
+  Serial.print(fsm_get_state(&fsm) == STATE_ANOMALIA ? 1 : 0);
+  Serial.print(',');
+  Serial.println(current_label);
+}
+
+// Reads whatever the user typed and runs the matching command.
 void handle_serial_command() {
   while (Serial.available() > 0) {
     char c = Serial.read();
@@ -67,6 +101,19 @@ void handle_serial_command() {
       print_temperature();
     } else if (c == 'E' || c == 'e') {
       print_state();
+    } else if (c == 'L' || c == 'l') {
+      logging_enabled = !logging_enabled;
+      if (logging_enabled) {
+        print_log_header();
+      } else {
+        Serial.println("# log desligado");
+      }
+    } else if (c == 'A' || c == 'a') {
+      current_label = 1;
+      Serial.println("# rotulo = 1 (anomalia)");
+    } else if (c == 'N' || c == 'n') {
+      current_label = 0;
+      Serial.println("# rotulo = 0 (normal)");
     }
   }
 }
@@ -80,7 +127,7 @@ void setup() {
   fsm_init(&fsm);
 
   Serial.println("Sentinela Energetico - Arduino build OK");
-  Serial.println("Digite T (temperatura) ou E (estado) e Enter.");
+  Serial.println("Comandos: E estado | T temperatura | L log CSV | A anomalia | N normal");
 }
 
 void loop() {
@@ -89,16 +136,30 @@ void loop() {
   window_push(&window, value);
 
   bool fixed_flag = detector_fixed(value);
+  bool adaptive_flag = false;
+  if (window_count(&window) >= MIN_SAMPLES_FOR_ADAPTIVE) {
+    adaptive_flag = detector_adaptive(&window, value);
+  }
+
   bool transitioned = fsm_update(&fsm, fixed_flag);
 
   if (transitioned) {
     SystemState new_state = fsm_get_state(&fsm);
-    Serial.print("TRANSICAO -> ");
     output_hal_update(new_state);
 
-    if (new_state == STATE_ANOMALIA) {
-      print_temperature();
+    // While logging, stay silent so text never mixes into the CSV.
+    if (!logging_enabled) {
+      if (new_state == STATE_ANOMALIA) {
+        Serial.println("TRANSICAO -> ANOMALIA: LED e buzzer ligados.");
+        print_temperature();
+      } else {
+        Serial.println("TRANSICAO -> NORMAL: LED e buzzer desligados.");
+      }
     }
+  }
+
+  if (logging_enabled) {
+    print_log_line(value, fixed_flag, adaptive_flag);
   }
 
   handle_serial_command();

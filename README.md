@@ -1,87 +1,88 @@
-# Sentinela Energético — v1 (limiar estatístico)
+# Sentinela Energético — v2 (classificador aprendido dos dados)
 
-Nó embarcado (Arduino Uno) que lê um sinal físico, processa tudo localmente e detecta sozinho quando o comportamento sai do normal, acionando LED e buzzer. Não depende de PC nem de nuvem para decidir.
+Nó embarcado (Arduino Uno) que lê um sensor, processa tudo localmente e detecta sozinho quando o comportamento sai do normal, acionando LED e buzzer. A v2 troca o limiar fixo por um classificador treinado com dados reais e compara os dois nos mesmos dados.
 
 **Autor:** Wesley (Engenharia Elétrica, UEA)
 
-## O que é e por que existe
+A versão anterior (limiar estatístico, simulação no PC e Arduino) está preservada na tag `v1-limiar`.
 
-O objetivo é monitorar o comportamento de um ambiente (no futuro, consumo de energia) e detectar anomalias na borda (*edge*). Como ainda não tenho sensor de corrente, usei um **NTC** (termistor) como sensor *proxy*: um elemento que consome mais energia esquenta, então temperatura é uma grandeza que se relaciona com consumo. O NTC **não mede corrente**; ele é um substituto para desenvolver e validar a lógica.
+## Resultado em uma tabela
 
-A arquitetura separa a camada do sensor (HAL) da lógica de decisão, para que o NTC possa ser trocado por um sensor de corrente sem reescrever a detecção.
+Teste "uma sessão de fora": o modelo é treinado com 3 sessões e avaliado na 4ª, que ele nunca viu, repetindo para cada sessão. A nota é a média entre acertar as anomalias e acertar o que é normal (0,50 equivale a chute).
 
-Esta é a **v1**: detecção por limiar estatístico. A v2 vai adicionar um classificador leve treinado com dados reais e compará-lo com esta versão.
+| Método | Acerta as anomalias | Alarme falso | Nota |
+|---|---|---|---|
+| Limiar fixo (590) | 64% | 30% | 0,67 |
+| Adaptativo (3 desvios) | 2% | 1% | 0,51 |
+| Árvore com valores absolutos | 87% | 33% | 0,77 |
+| **Classificador aprendido (embarcado)** | **74%** | **6%** | **0,84** |
+| Controle: regra "desvio padrão > 1,6" | 77% | 7% | 0,85 |
+
+Nota por sessão:
+
+| Método | dia, sem ar (~611) | dia, com ar (~536) | noite, sem ar (~584) | noite, com ar (~510) |
+|---|---|---|---|---|
+| Limiar fixo | 0,50 | 0,68 | 0,97 | 0,66 |
+| Adaptativo | 0,50 | 0,51 | 0,50 | 0,51 |
+| Árvore absoluta | 0,50 | 0,87 | 0,90 | 0,93 |
+| Classificador aprendido | 0,71 | 0,87 | 0,85 | 0,93 |
+
+![Comparação dos detectores em cada sessão](docs/comparison.png)
+
+Cinza: período de anomalia real. Barras: o que cada detector marcou. Repare nos buracos da barra verde quando o sinal fica estável no alto (platô): o classificador enxerga mudança, não nível.
+
+## O que o projeto mostra
+
+- **O limiar fixo depende do repouso.** O mesmo 590 marcou anomalia o tempo todo na tarde quente (repouso ~611), funcionou bem na noite sem ar (repouso ~584, só 5 pontos abaixo do limiar) e pegou uma fração nas sessões com ar. O repouso do sensor variou de ~510 a ~611 conforme a temperatura do quarto.
+- **O classificador usa a variação, não o nível.** Por isso funcionou com um repouso que nunca viu (483, em teste na placa).
+- **O modelo aprendido se reduziu a um corte só:** desvio padrão da janela acima de ~1,75. Árvores mais profundas acertaram um pouco mais, mas dobraram os alarmes falsos, e a regra manual de uma linha empata com o modelo (0,85 contra 0,84). O valor do corte, porém, veio dos dados.
+- **O detector adaptativo falha como detector de evento:** percebe o começo e depois se acostuma com a anomalia.
 
 ## Como funciona
 
-A cada 200 ms:
+A cada 200 ms, o sensor é lido e entra em uma janela deslizante de 20 amostras. Dois detectores rodam lado a lado, cada um com sua máquina de estados (NORMAL e ANOMALIA, com histerese de 3 leituras):
 
-```
-sensor_hal_read()   -> lê o NTC (valor cru, 0 a 1023)
-window_push()       -> guarda na janela deslizante (20 amostras)
-detector_fixed()    -> compara com o limiar fixo
-fsm_update()        -> atualiza o estado NORMAL/ANOMALIA
-output_hal_update() -> LED e buzzer, só quando o estado muda
-```
+1. **Limiar fixo (v1):** leitura acima de 590.
+2. **Classificador (v2):** `classifier_predict(stddev)`, código C gerado por `tools/export_tree.py` a partir da árvore treinada.
 
-- **Janela deslizante:** buffer circular com as últimas 20 leituras, escrita em tempo constante.
-- **Dois detectores implementados:** limiar **fixo** (valor cru acima de 590) e limiar **adaptativo** (valor acima de média + 3 desvios padrão da janela).
-- **Máquina de estados com histerese:** só troca de estado após 3 leituras consecutivas concordando (cerca de 0,6 s), para ruído isolado não fazer o LED piscar.
-- **A máquina de estados usa o limiar fixo**, pelo motivo abaixo.
+O LED e o buzzer seguem o classificador, ou o limiar se for trocado com o comando `M`. O classificador tem uma trava anti-pisca: o alarme só termina depois de ~10 s sem variação, e a saída é ignorada por ~5 s depois de mudar.
 
-## Decisões técnicas
+## Dados e rótulos
 
-**Simulação no PC antes do hardware.** Toda a lógica foi escrita e testada em C no PC, com um sensor simulado, e só depois portada para o Arduino trocando apenas a camada de sensor e de saída.
+Quatro sessões gravadas no próprio sensor (NTC 10 kΩ), em quatro condições: dia e noite, com e sem ar-condicionado. Cada sessão tem 3 aquecimentos do sensor com o dedo (de ~5 a ~27 s), com o sensor parado, sem tocar nas perninhas. São 3413 linhas, das quais 3333 foram usadas (as 20 primeiras de cada sessão, com a janela ainda vazia, são descartadas).
 
-**Sinal simulado.** O sensor simulado gera um sinal que oscila perto de um ponto de repouso (passeio aleatório com reversão à média, taxa 0,07) e, raramente (0,2% por leitura), entra em uma anomalia sustentada de 30 a 80 leituras, com subida instantânea e recuperação gradual.
+O rótulo de anomalia vai do início do aquecimento até a leitura voltar a ~4 pontos do repouso anterior. Quando o fim do rótulo foi marcado tarde, uma regra no código encurta o bloco (uma única regra, igual para todas as sessões). Os arquivos estão em `data/`.
 
-**Por que o detector adaptativo não comanda a máquina de estados.** Na simulação, o limiar adaptativo detecta o início de uma anomalia, mas deixa de sinalizar no meio dela: conforme a janela se enche de valores anômalos, a média e o desvio da própria janela se ajustam e a anomalia passa a parecer normal. O limiar fixo continuou sinalizando durante todo o evento. Por isso a v1 usa o fixo.
+## Resultados na placa
 
-**Camadas desacopladas.** O resto do código só conhece a interface (`sensor_hal.h`, `output_hal.h`). No PC, as implementações são simuladas; no Arduino, usam `analogRead` e `digitalWrite`.
-
-## Hardware
-
-| Componente | Ligação |
-|---|---|
-| NTC | 5V, NTC, pino A0 |
-| Resistor 10 kΩ | pino A0, GND |
-| LED (com resistor em série) | pino D8 |
-| Buzzer | pino D9 |
-
-O NTC e o resistor formam um divisor de tensão: quando a temperatura sobe, a resistência do NTC cai e a leitura em A0 sobe.
-
-## Estrutura
-
-```
-src/                         código da simulação no PC (hal, core, app, output)
-platform/pc/main.c           ponto de entrada da simulação
-platform/arduino/sentinela_arduino/
-    sentinela_arduino.ino    ponto de entrada do Arduino
-    src/                     cópia do núcleo + HAL e saída reais (.cpp)
-Makefile                     compila a simulação no PC
-```
-
-## Como rodar
-
-**Simulação no PC** (MSYS2 UCRT64 com `gcc` e `make`):
-
-```
-make
-./sentinela.exe
-```
-
-**No Arduino:** abra `platform/arduino/sentinela_arduino/sentinela_arduino.ino` no Arduino IDE, selecione a placa Arduino Uno e faça o upload. No Serial Monitor (9600 baud), o sistema fica quieto. Digite `E` para ver o estado e `T` para ver a temperatura estimada; ela também aparece sozinha quando uma anomalia é detectada.
+- Acende ~1 s depois de começar o aquecimento.
+- Apaga ~15 a 17 s depois de soltar (medido antes da trava anti-pisca; a versão final espera ~10 s sem variação antes de apagar, e esse tempo não foi medido).
+- Memória no Uno: ~9,5 KB de flash (29%) e 758 bytes de RAM (37%), medidos antes da trava anti-pisca.
 
 ## Limitações
 
-- **O sensor é um proxy.** O NTC mede temperatura, não corrente nem consumo.
-- **O limiar fixo foi calibrado à mão**, com poucos testes de dedo no NTC. A leitura de repouso variou entre sessões (cerca de 485 a 550, com o ar-condicionado ligado ou desligado), então um limiar fixo é frágil quando o ambiente muda.
-- **A temperatura em °C é uma estimativa**, que assume um NTC de 10 kΩ com beta 3950. A detecção usa a leitura crua, não os graus.
-- **Código duplicado.** O núcleo existe em duas cópias (PC e Arduino), com caminhos de `#include` diferentes, e precisa ser mantido em sincronia.
-- **Sem avaliação com métricas.** Não há dados rotulados nesta versão; a taxa de acertos e de falsos positivos dos detectores ainda não foi medida em dados reais.
+- **Poucos dados:** um sensor, uma pessoa, 4 sessões e 12 aquecimentos. Os números são indicativos, não conclusivos.
+- **A anomalia é calor do dedo no sensor**, usado como substituto de um evento de consumo. O NTC mede temperatura, não corrente.
+- **O classificador detecta mudança, não nível:** um platô alto e estável pode passar despercebido depois que a janela se acostuma (recall de 74%).
+- **O caso mais difícil é a tarde quente (nota 0,71):** o dedo mal esquenta um sensor que já está quase na temperatura da pele.
+- **Pisca-pisca na descida:** durante a descida o classificador chegou a alternar de estado. A trava anti-pisca resolveu nos testes, mas a causa (variação real do sinal ou interferência da saída) não foi isolada.
+- **A temperatura em °C é uma estimativa** (assume NTC 10 kΩ, beta 3950).
+- O limiar de 590 foi calibrado à mão em uma condição específica.
+- O núcleo do código existe em duas cópias (PC e Arduino).
 
-## Próximos passos (v2)
+## Como reproduzir
 
-1. Coletar dados reais rotulados em várias condições (dia e noite, com e sem ar-condicionado).
-2. Treinar em Python uma árvore de decisão rasa e converter as regras para C.
-3. Rodar o classificador no Arduino ao lado do limiar e comparar os dois nos mesmos dados.
+```
+python tools\capture_serial.py      # grava uma sessão (comandos A, N, Q)
+python tools\load_data.py           # confere os dados
+python tools\train_eval.py          # treina e compara (teste por sessão)
+python tools\depth_sweep.py         # compara profundidades da árvore
+python tools\export_tree.py         # gera classifier.c e classifier.h
+python tools\plot_results.py        # gera docs/comparison.png
+```
+
+No Arduino, abra `platform/arduino/sentinela_arduino/sentinela_arduino.ino`. Comandos no Serial Monitor (9600): `E` estados, `T` temperatura, `M` trocar o detector que comanda o LED, `L` log CSV, `A` e `N` rótulos.
+
+## Próximos passos
+
+Mais sessões e outros tipos de anomalia, sensor de corrente real em vez do NTC e uma versão para ESP32.
